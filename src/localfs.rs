@@ -99,6 +99,7 @@ pub(crate) struct LocalFsInner {
     pub macos: bool,
     pub is_file: bool,
     pub fs_access_guard: Option<Box<dyn Fn() -> Box<dyn Any> + Send + Sync + 'static>>,
+    pub includes: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -148,6 +149,7 @@ impl LocalFs {
             case_insensitive,
             is_file: false,
             fs_access_guard: None,
+            includes: vec![],
         };
         Box::new({
             LocalFs {
@@ -156,11 +158,13 @@ impl LocalFs {
         })
     }
 
+
     /// Create a new LocalFs DavFileSystem, serving "file".
     ///
     /// This is like `new()`, but it always serves this single file.
     /// The request path is ignored.
     pub fn new_file<P: AsRef<Path>>(file: P, public: bool) -> Box<LocalFs> {
+        println!("fffff");
         let inner = LocalFsInner {
             basedir: file.as_ref().to_path_buf(),
             public,
@@ -168,6 +172,7 @@ impl LocalFs {
             case_insensitive: false,
             is_file: true,
             fs_access_guard: None,
+            includes: vec![],
         };
         Box::new({
             LocalFs {
@@ -192,6 +197,7 @@ impl LocalFs {
             case_insensitive,
             is_file: false,
             fs_access_guard,
+            includes: vec![],
         };
         Box::new({
             LocalFs {
@@ -200,6 +206,28 @@ impl LocalFs {
         })
     }
 
+    pub fn new_with_includes<P: AsRef<Path>>(
+        base: P,
+        public: bool,
+        case_insensitive: bool,
+        macos: bool,
+        includes: Vec<String>,
+    ) -> Box<LocalFs> {
+        let inner = LocalFsInner {
+            basedir: base.as_ref().to_path_buf(),
+            public,
+            macos,
+            case_insensitive,
+            is_file: false,
+            fs_access_guard: None,
+            includes: includes,
+        };
+        Box::new({
+            LocalFs {
+                inner: Arc::new(inner),
+            }
+        })
+    }
     fn fspath_dbg(&self, path: &DavPath) -> PathBuf {
         let mut pathbuf = self.inner.basedir.clone();
         if !self.inner.is_file {
@@ -475,6 +503,7 @@ fn read_batch(
     iterator: Option<std::fs::ReadDir>,
     fs: LocalFs,
     do_meta: ReadDirMeta,
+    includes: Vec<String>,
 ) -> ReadDirBatch {
     let mut buffer = VecDeque::new();
     let mut iterator = match iterator {
@@ -498,8 +527,12 @@ fn read_batch(
                     ReadDirMeta::DataSymlink => Meta::Data(entry.metadata()),
                     ReadDirMeta::None => Meta::Fs(fs.clone()),
                 };
+
+                let name = entry.file_name().to_string_lossy().to_string();
                 let d = LocalFsDirEntry { meta, entry };
-                buffer.push_back(Ok(d))
+                if includes.is_empty() || includes.contains(&name) {
+                    buffer.push_back(Ok(d))
+                }
             }
             Some(Err(e)) => {
                 buffer.push_back(Err(e));
@@ -523,9 +556,9 @@ impl LocalFsReadDir {
         let iterator = self.iterator.take();
         let fs = self.fs.clone();
         let do_meta = self.do_meta;
-
+        let includes = self.fs.inner.includes.clone();
         let fut: BoxFuture<ReadDirBatch> =
-            blocking(move || read_batch(iterator, fs, do_meta)).boxed();
+            blocking(move || read_batch(iterator, fs, do_meta, includes)).boxed();
         fut
     }
 }
